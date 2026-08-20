@@ -4,10 +4,7 @@ from google import genai
 from google.genai import types
 
 def run_spfl_manager():
-    # 1. Fetch live SPFL player pool
     url = "https://fantasy.spfl.co.uk/v1/private/searchjoueurs?lg=en"
-    
-    # Headers using your SPFL session token & access key
     headers = {
         "accept": "application/json",
         "content-type": "application/json",
@@ -16,33 +13,19 @@ def run_spfl_manager():
         "x-access-key": os.getenv("SPFL_ACCESS_KEY", "640@21.01@@9bb4ed46-7d95-47b0-8a33-a8e071b9cc81")
     }
 
-    # Request all players in one payload
     payload = {
         "filters": {
-            "nom": "",
-            "club": "",
-            "position": "",
-            "budget_ok": False,
-            "valeur_max": 25,
-            "engage": False,
-            "partant": False,
-            "dreamteam": False,
-            "quota": "",
-            "sort": "valeur",
-            "idj": "3",
-            "pageIndex": 0,
-            "pageSize": 500,
-            "loadSelect": 1,
-            "searchonly": 0
+            "nom": "", "club": "", "position": "", "budget_ok": False,
+            "valeur_max": 25, "engage": False, "partant": False,
+            "dreamteam": False, "quota": "", "sort": "valeur",
+            "idj": "3", "pageIndex": 0, "pageSize": 500, "loadSelect": 1, "searchonly": 0
         }
     }
 
     response = requests.post(url, headers=headers, json=payload)
     data = response.json()
 
-    # 2. Map positions: 1: GK, 2: DEF, 3: MID, 4: FWD
     pos_map = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
-    
     players = data.get("joueurs", [])
     formatted_pool = []
     
@@ -51,45 +34,40 @@ def run_spfl_manager():
         club = p.get("club", "Unknown")
         pos = pos_map.get(p.get("id_position"), "MID")
         val = float(p.get("valeur", 0.0))
-        
         formatted_pool.append(f"{name} | {pos} | {club} | £{val:.1f}m")
 
     spfl_context = "\n".join(formatted_pool)
 
-    # 3. Construct the SPFL Optimization Prompt
-    prompt = f"""You are the lead data scientist and manager for the SPFL fantasy football team 'Bayern Bru'.
-Select the mathematically optimal 15-man squad for Gameweek 3 based strictly on the live SPFL data below.
+    prompt = f"""You are the manager for SPFL fantasy team 'Bayern Bru'.
+Gameweek 3 is a MASSIVE BLANK GAMEWEEK: 5 of 6 matches are postponed. 
+The ONLY fixture taking place is Dundee United vs Dundee.
 
-Core SPFL Rules & Mechanics:
-- Total Budget: Maximum £100.0m.
-- Squad Structure: Exactly 15 players (2 GKs, 5 DEFs, 5 MIDs, 3 FWDs).
-- Team Limit: Maximum 3 players from any single Scottish Premiership team (e.g., Celtic, Rangers, Aberdeen, Hearts, Hibs, etc.).
-- BENCH SCORING RULE: All 4 bench players earn 50% of their points each week, and there are NO auto-subs. Do NOT select non-playing £4.0m deadwood. All 15 players must play regular minutes.
-- SUPERSUB RULE: Designate 1 bench player as the 'Supersub' (select an attacking player or winger who frequently comes on as an impactful real-life substitute to trigger the 3x multiplier).
-- CAPTAIN BONUS: Captain scores double points PLUS a +20 flat bonus. Select the highest ceiling goal/assist threat in the league.
+Rules & Optimization Strategy:
+1. MAXIMIZE ACTIVE GW3 POINTS: Select exactly 3 players from Dundee United and 3 players from Dundee in the Starting XI.
+2. CAPTAINCY (+20pt flat bonus + 2x multiplier): MUST be assigned to an active attacker/playmaker from Dundee United or Dundee.
+3. SUPERSUB (3x multiplier): Designate a bench player from Dundee or Dundee United who is likely to come on as an impact substitute.
+4. REMAINING 9 PLAYERS: Fill with elite, nailed assets from Celtic, Rangers, Aberdeen, and Hearts who will score 0 this week but provide immediate high value for Gameweek 4 and future Double Gameweeks.
+5. Strict £100.0m total budget and max 3 players per club.
 
 Output Structure Required:
-1. 15-Man Squad Grouped by Premiership Club (Alphabetical by team with player name, position, and exact price).
+1. 15-Man Squad Grouped by Club (Alphabetical with position and price).
 2. Total Squad Cost Verification (£100.0m limit).
-3. Formation & Starting XI.
-4. Captain (C) and Vice-Captain (VC).
-5. Bench (4 players) in priority order, explicitly designating the 'Supersub'.
+3. Formation & Starting XI (Highlighting the 6 playing Dundee Derby assets).
+4. Captain (C) & Vice-Captain (VC).
+5. Bench (4 players) with explicit designation of the 'Supersub'.
 
 Player Data Pool:
 {spfl_context}
 """
 
-    # 4. Generate deterministic selection
     client = genai.Client()
     response = client.models.generate_content(
         model="gemini-3.6-flash",
         contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.0,
-        )
+        config=types.GenerateContentConfig(temperature=0.0)
     )
 
-    print("--- Bayern Bru: SPFL Gameweek 3 Squad & Tactics ---")
+    print("--- Bayern Bru: SPFL Blank Gameweek 3 Master Plan ---")
     print(response.text)
 
 if __name__ == "__main__":
