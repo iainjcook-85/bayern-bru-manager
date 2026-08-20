@@ -3,7 +3,7 @@ import requests
 from google import genai
 
 def run_manager():
-    # 1. Fetch live FPL data with a browser footprint to bypass blocks
+    # 1. Fetch live FPL data with a browser footprint
     url = "https://fantasy.premierleague.com/api/bootstrap-static/"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
@@ -30,16 +30,17 @@ Core Constraints:
 - Total Budget: Maximum £100.0m.
 - Squad Structure: Exactly 15 players (2 GKs, 5 DEFs, 5 MIDs, 3 FWDs).
 - Team Limit: Maximum of 3 players from any single Premier League team.
-- Designate 1 Captain and 1 Vice-Captain.
+- Designate 1 Captain (C) and 1 Vice-Captain (VC).
+- List the players clearly grouped by team.
 
 Player Data:
 {fpl_context}
 """
 
-    # 5. Generate the AI strategy
+    # 5. Generate the AI strategy with the active model
     client = genai.Client() 
     response = client.models.generate_content(
-        model="gemini-2.5-flash", 
+        model="gemini-3.6-flash", 
         contents=prompt
     )
 
