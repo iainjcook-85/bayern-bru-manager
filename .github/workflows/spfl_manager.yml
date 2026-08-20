@@ -1,0 +1,27 @@
+name: SPFL Fantasy Manager
+
+on:
+  schedule:
+    # Runs automatically every Friday morning at 10:00 UTC (11:00 BST)
+    - cron: '0 10 * * 5'
+  workflow_dispatch:
+
+jobs:
+  run-spfl-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install requests google-genai
+
+      - name: Run SPFL Manager
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python spfl_agent.py
