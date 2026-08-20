@@ -15,11 +15,15 @@ def run_manager():
     teams = {t['id']: t['name'] for t in data['teams']}
     positions = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
 
-    # 3. Extract active players cleanly
-    active_players = [
-        f"{p['web_name']} - {positions.get(p['element_type'])} - £{p['now_cost']/10}m - Team: {teams.get(p['team'])}" 
-        for p in data["elements"] if p["status"] != 'u'
-    ]
+    # 3. Extract players with injury/ban news
+    active_players = []
+    for p in data["elements"]:
+        if p["status"] != 'u': 
+            news = f" - Warning: {p['news']}" if p.get('news') else ""
+            active_players.append(
+                f"{p['web_name']} - {positions.get(p['element_type'])} - £{p['now_cost']/10}m - Team: {teams.get(p['team'])} - Status: {p['status']}{news}"
+            )
+    
     fpl_context = "\n".join(active_players)
 
     # 4. Construct the GW1 Squad Prompt
@@ -32,12 +36,13 @@ Core Constraints:
 - Team Limit: Maximum of 3 players from any single Premier League team.
 - Designate 1 Captain (C) and 1 Vice-Captain (VC).
 - List the players clearly grouped by team.
+- CRITICAL: Do NOT select any player unless their Status is 'a' (available). Exclude all injured ('i'), suspended ('s'), or doubtful ('d') players.
 
 Player Data:
 {fpl_context}
 """
 
-    # 5. Generate the AI strategy with the active model
+    # 5. Generate the AI strategy
     client = genai.Client() 
     response = client.models.generate_content(
         model="gemini-3.6-flash", 
