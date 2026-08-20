@@ -1,0 +1,27 @@
+name: Bayern Bru FPL Manager
+
+on:
+  schedule:
+    # Runs every Thursday at 10:00 AM UTC (11:00 AM BST)
+    - cron: '0 10 * * 4' 
+  workflow_dispatch: # Allows you to manually trigger the workflow from the Actions tab for testing
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest # Provisions a fresh Linux virtual machine in the cloud
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install requests google-genai
+
+      - name: Run FPL Manager
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python fpl_agent.py
