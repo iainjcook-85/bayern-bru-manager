@@ -3,29 +3,47 @@ import requests
 from google import genai
 
 def run_manager():
-    # 1. Fetch live FPL data
+    # 1. Fetch live FPL data with a browser footprint to bypass blocks
     url = "https://fantasy.premierleague.com/api/bootstrap-static/"
-    data = requests.get(url).json()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+    response = requests.get(url, headers=headers)
+    data = response.json()
 
-    # 2. Extract active players to save token space
+    # 2. Map Team IDs and Positions for the AI
+    teams = {t['id']: t['name'] for t in data['teams']}
+    positions = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
+
+    # 3. Extract active players cleanly
     active_players = [
-        f"{p['web_name']} - £{p['now_cost']/10}m - {p['total_points']}pts - Status: {p['status']}" 
+        f"{p['web_name']} - {positions.get(p['element_type'])} - £{p['now_cost']/10}m - Team: {teams.get(p['team'])}" 
         for p in data["elements"] if p["status"] != 'u'
     ]
     fpl_context = "\n".join(active_players)
 
-    # 3. Construct the prompt
-    prompt = f"You are the manager for my FPL team, Bayern Bru. Analyze this data and suggest 1 optimal transfer for the upcoming Gameweek:\n{fpl_context}"
+    # 4. Construct the GW1 Squad Prompt
+    prompt = f"""You are the manager for my FPL team, Bayern Bru. 
+Select our initial 15-man squad for Gameweek 1 based strictly on this data.
 
-    # 4. Generate the AI strategy
-    # The client automatically picks up the GEMINI_API_KEY environment variable
+Core Constraints:
+- Total Budget: Maximum £100.0m.
+- Squad Structure: Exactly 15 players (2 GKs, 5 DEFs, 5 MIDs, 3 FWDs).
+- Team Limit: Maximum of 3 players from any single Premier League team.
+- Designate 1 Captain and 1 Vice-Captain.
+
+Player Data:
+{fpl_context}
+"""
+
+    # 5. Generate the AI strategy
     client = genai.Client() 
     response = client.models.generate_content(
         model="gemini-2.5-flash", 
         contents=prompt
     )
 
-    print("--- Bayern Bru Weekly Strategy ---")
+    print("--- Bayern Bru: Gameweek 1 Initial Squad ---")
     print(response.text)
 
 if __name__ == "__main__":
