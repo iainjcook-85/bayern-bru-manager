@@ -182,7 +182,7 @@ Output Format:
     # 8. Deterministic Generation using chat interface
     client = genai.Client()
     chat = client.chats.create(
-        model="gemini-2.5-flash",
+        model="gemini-3.6-flash",
         config=types.GenerateContentConfig(temperature=0.0)
     )
     response = chat.send_message(prompt)
