@@ -47,7 +47,6 @@ def run_fpl_manager():
             bank_balance = last_event.get("bank", 0) / 10
             total_points = last_event.get("total_points", 0)
 
-        # Calculate exact FT accumulation from GW2 onwards
         for ev in completed_events:
             gw_num = ev.get("event")
             if gw_num < 2 or gw_num >= next_gw:
@@ -91,7 +90,7 @@ def run_fpl_manager():
 
     picks_data = resp_picks.json()
 
-    # 5. Build live squad payload with 4-week fixture runs
+    # 5. Build live squad payload with Threat, Creativity & Fixtures
     current_squad_stats = []
     for pick in picks_data.get("picks", []):
         p_id = pick["element"]
@@ -109,39 +108,52 @@ def run_fpl_manager():
         status = p.get("status", "a")
         chance = p.get("chance_of_playing_next_round", 100)
         ep_next = float(p.get("ep_next") or 0.0)
-        form = float(p.get("form") or 0.0)
+        threat = float(p.get("threat") or 0.0)
+        creat = float(p.get("creativity") or 0.0)
+        goals = p.get("goals_scored", 0)
+        assists = p.get("assists", 0)
         schedule = get_schedule_str(t_id)
 
         current_squad_stats.append(
             f"Slot {pos_order}{is_bench}: {name}{is_cap}{is_vc} | {pos} | {team} | Cost: £{cost:.1f}m | "
-            f"Status: {status} ({chance}%) | xP(GW{next_gw}): {ep_next} | Form: {form} | Run: [{schedule}]"
+            f"Status: {status} ({chance}%) | xP(GW{next_gw}): {ep_next} | Threat: {threat:.0f} | "
+            f"Creativity: {creat:.0f} | G+A: {goals}+{assists} | Run: [{schedule}]"
         )
 
-    # 6. Extract top live market transfer targets
+    # 6. Extract top live market transfer targets (Filtering out non-attacking CDMs)
     market_pool = []
     for p in data["elements"]:
         if p["status"] == 'a' and float(p.get("chance_of_playing_next_round") or 100) == 100:
             cost = p["now_cost"] / 10
             ep_next = float(p.get("ep_next") or 0.0)
             form = float(p.get("form") or 0.0)
-            ict = float(p.get("ict_index") or 0.0)
+            threat = float(p.get("threat") or 0.0)
+            creat = float(p.get("creativity") or 0.0)
             t_id = p.get("team")
+            pos_type = p.get("element_type")
 
-            if ep_next >= 3.8 or form >= 4.5 or ict >= 12.0:
+            # Ignore defensive midfielders with negligible threat/creativity
+            if pos_type == 3 and threat < 30.0 and creat < 30.0 and form < 4.0:
+                continue
+
+            if ep_next >= 3.8 or form >= 4.5 or threat >= 60.0:
                 name = p["web_name"]
-                pos = positions.get(p["element_type"], "MID")
+                pos = positions.get(pos_type, "MID")
                 team = teams.get(t_id, "Unknown")
+                goals = p.get("goals_scored", 0)
+                assists = p.get("assists", 0)
                 schedule = get_schedule_str(t_id)
                 market_pool.append(
-                    f"{name} | {pos} | {team} | Cost: £{cost:.1f}m | xP(GW{next_gw}): {ep_next} | Run: [{schedule}]"
+                    f"{name} | {pos} | {team} | Cost: £{cost:.1f}m | xP(GW{next_gw}): {ep_next} | "
+                    f"Threat: {threat:.0f} | Creat: {creat:.0f} | G+A: {goals}+{assists} | Run: [{schedule}]"
                 )
 
     current_squad_context = "\n".join(current_squad_stats)
     market_context = "\n".join(market_pool[:60])
 
-    # 7. Construct Tactical Prompt
+    # 7. Construct Guardrailed Tactical Prompt
     prompt = f"""You are the lead tactical analyst for FPL team 'Bayern Bru' (ID: {TEAM_ID}).
-We are preparing our strategy for Gameweek {next_gw} with a mandatory 4-Gameweek horizon (GW{next_gw} to GW{next_gw + 3}).
+We are preparing our strategy for Gameweek {next_gw} with a 4-Gameweek horizon (GW{next_gw} to GW{next_gw + 3}).
 
 Manager Dashboard:
 - Current Overall Points: {total_points}
@@ -150,36 +162,36 @@ Manager Dashboard:
 - Max Free Transfers Bankable: 5
 - Squad Constraints: Exactly 15 players, max 3 players per Premier League club.
 
-Current Live Squad (Synced from FPL API with 4-Week Fixture Radar):
+Current Live Squad (Synced from FPL API):
 {current_squad_context}
 
-Top Market Targets (With 4-Week Fixture Schedules):
+Top Market Targets (Live Filtered Pool):
 {market_context}
 
-Strategic Objectives & Directives:
-1. 4-WEEK SQUAD AUDIT:
-   - Identify flagged, doubtful, or benched assets.
-   - Evaluate fixture difficulty across GW{next_gw}–GW{next_gw+3} (FDR 2 = Easy green, FDR 4/5 = Hard red).
-2. TRANSFER DECISION:
-   - You currently have {available_fts} Free Transfer(s) available.
-   - ROLL TRANSFER: If the current starting XI is healthy and has favorable fixtures, recommend rolling to accumulate further transfers (up to 5 max).
-   - EXECUTE TRANSFER: If you have 2+ FTs or an injured/flagged player, evaluate executing single or coordinated double-moves within £{bank_balance:.1f}m ITB.
-3. STARTING XI & FORMATION:
-   - Select 11 starters based on Gameweek {next_gw} expected points and fixture match-ups.
-4. CAPTAINCY SELECTION:
-   - Assign Captain (C) and Vice-Captain (VC).
-5. BENCH ORDER:
-   - Order substitutes strictly by expected points for GW{next_gw}.
+CRITICAL RULES & FORMATION CONSTRAINTS:
+1. STRICT ROSTER ACCOUNTING:
+   - Exactly 11 starters and exactly 4 bench players.
+   - EVERY PLAYER MUST APPEAR EXACTLY ONCE. A player CANNOT be listed as both a starter and on the bench.
+   - You only have 2 active playing forwards (Haaland, Isak; Obi is non-playing bench fodder). Therefore, 3-4-3 is STRICTLY IMPOSSIBLE.
+   - Permissible formations for this squad: 4-4-2, 3-5-2, or 5-3-2.
 
-Output Format:
+2. ANTI-CDM TRANSFER RULE:
+   - NEVER sell an attacking midfielder (winger/number 10 like Smith Rowe) for a defensive/holding midfielder (CDM like Janelt, Norgaard, Soucek), even if their short-term xP is inflated by clean-sheet projections.
+   - Midfield targets MUST have genuine attacking threat and high open-play involvement.
+
+3. TRANSFER DECISION LOGIC:
+   - Available FTs: {available_fts}.
+   - If no starter is injured/suspended, and no target offers a clear multi-week attacking upgrade within £{bank_balance:.1f}m ITB, you MUST recommend **[ROLL TRANSFER]** to bank transfers for subsequent weeks.
+
+Output Structure:
 1. **4-Week Fixture & Squad Health Audit**
-2. **Transfer Decision**: State **[ROLL TRANSFER]** (projecting banked FTs for next week) or **[EXECUTE TRANSFER: OUT -> IN]** with full financial math
-3. **Gameweek {next_gw} Starting XI & Optimal Formation**
+2. **Transfer Decision**: **[ROLL TRANSFER]** or **[EXECUTE TRANSFER: OUT -> IN]** with financial math
+3. **Gameweek {next_gw} Starting XI & Formation** (Must be a legal 11-man formation)
 4. **Captain (C) & Vice-Captain (VC)**
-5. **Bench Priority Order**
+5. **Bench Priority Order** (Sub GK, Bench 1, Bench 2, Bench 3 - exactly 4 unique players not in Starting XI)
 """
 
-    # 8. Deterministic Generation using chat interface
+    # 8. Deterministic Generation
     client = genai.Client()
     chat = client.chats.create(
         model="gemini-3.6-flash",
