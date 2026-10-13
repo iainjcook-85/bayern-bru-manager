@@ -1,7 +1,9 @@
 import os
+import time
 import requests
 from google import genai
 from google.genai import types
+from google.genai import errors
 
 def run_fpl_manager():
     TEAM_ID = 6671455
@@ -191,16 +193,31 @@ Output Structure:
 5. **Bench Priority Order** (Sub GK, Bench 1, Bench 2, Bench 3 - exactly 4 unique players not in Starting XI)
 """
 
-    # 8. Deterministic Generation
+    # 8. Deterministic Generation with automated retry & backoff
     client = genai.Client()
-    chat = client.chats.create(
-        model="gemini-3.6-flash",
-        config=types.GenerateContentConfig(temperature=0.0)
-    )
-    response = chat.send_message(prompt)
+    max_retries = 4
+    delay = 6
+    response = None
 
-    print(f"--- Bayern Bru: Gameweek {next_gw} 4-Week Horizon Plan ---")
-    print(response.text)
+    for attempt in range(1, max_retries + 1):
+        try:
+            chat = client.chats.create(
+                model="gemini-3.6-flash",
+                config=types.GenerateContentConfig(temperature=0.0)
+            )
+            response = chat.send_message(prompt)
+            break
+        except (errors.ServerError, errors.APIError) as e:
+            if attempt == max_retries:
+                print(f"API failed after {max_retries} attempts. Raising error.")
+                raise e
+            print(f"Gemini API 503/Busy (Attempt {attempt}/{max_retries}). Retrying in {delay}s...")
+            time.sleep(delay)
+            delay *= 2
+
+    if response:
+        print(f"--- Bayern Bru: Gameweek {next_gw} 4-Week Horizon Plan ---")
+        print(response.text)
 
 if __name__ == "__main__":
     run_fpl_manager()
