@@ -2,22 +2,40 @@ import os
 import time
 import requests
 from google import genai
-from google.genai import types
 from google.genai import errors
+
+
+def fetch_json(url, headers, max_retries=5):
+    delay = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=20)
+            resp.raise_for_status()
+            return resp.json()
+        except (requests.RequestException, ValueError) as e:
+            if attempt == max_retries:
+                print(f"FPL API failed after {max_retries} attempts for {url}: {e}")
+                raise
+            print(f"FPL API busy/error ({e}) on attempt {attempt}/{max_retries}. Retrying in {delay}s...")
+            time.sleep(delay)
+            delay *= 2
+
 
 def run_fpl_manager():
     TEAM_ID = 6671455
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     }
 
-    # 1. Fetch live FPL static bootstrap and fixtures
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise RuntimeError("GEMINI_API_KEY environment variable is missing in GitHub Secrets.")
+
+    # 1. Fetch live FPL static bootstrap and fixtures with retries
     url_bootstrap = "https://fantasy.premierleague.com/api/bootstrap-static/"
-    resp_boot = requests.get(url_bootstrap, headers=headers)
-    data = resp_boot.json()
+    data = fetch_json(url_bootstrap, headers)
 
     url_fixtures = "https://fantasy.premierleague.com/api/fixtures/"
-    fixtures_data = requests.get(url_fixtures, headers=headers).json()
+    fixtures_data = fetch_json(url_fixtures, headers)
 
     teams = {t['id']: t['name'] for t in data['teams']}
     team_short = {t['id']: t['short_name'] for t in data['teams']}
@@ -35,14 +53,12 @@ def run_fpl_manager():
 
     # 2. Fetch team history & dynamically calculate banked Free Transfers (Cap: 5)
     url_history = f"https://fantasy.premierleague.com/api/entry/{TEAM_ID}/history/"
-    resp_history = requests.get(url_history, headers=headers)
-    
     available_fts = 1
     bank_balance = 0.0
     total_points = 0
 
-    if resp_history.status_code == 200:
-        hist_data = resp_history.json()
+    try:
+        hist_data = fetch_json(url_history, headers)
         completed_events = hist_data.get("current", [])
         if completed_events:
             last_event = completed_events[-1]
@@ -58,6 +74,8 @@ def run_fpl_manager():
             free_used = max(0, transfers_made - (transfers_cost // 4))
             remaining = max(0, available_fts - free_used)
             available_fts = min(5, remaining + 1)
+    except Exception as e:
+        print(f"Warning: Could not parse history endpoint ({e}). Defaulting to 1 FT.")
 
     # 3. Build 4-Week Fixture Horizon (GW_next to GW_next+3)
     horizon_gws = list(range(next_gw, next_gw + 4))
@@ -80,20 +98,17 @@ def run_fpl_manager():
     # 4. Fetch live picks directly from the FPL API
     target_picks_gw = current_gw if current_gw > 0 else 1
     url_picks = f"https://fantasy.premierleague.com/api/entry/{TEAM_ID}/event/{target_picks_gw}/picks/"
-    resp_picks = requests.get(url_picks, headers=headers)
-    
-    if resp_picks.status_code != 200:
-        url_picks = f"https://fantasy.premierleague.com/api/entry/{TEAM_ID}/event/{max(1, target_picks_gw - 1)}/picks/"
-        resp_picks = requests.get(url_picks, headers=headers)
-
-    if resp_picks.status_code != 200:
-        print(f"Failed to fetch picks for Team ID {TEAM_ID}.")
-        return
-
-    picks_data = resp_picks.json()
+    try:
+        picks_data = fetch_json(url_picks, headers)
+    except Exception:
+        fallback_gw = max(1, target_picks_gw - 1)
+        url_picks = f"https://fantasy.premierleague.com/api/entry/{TEAM_ID}/event/{fallback_gw}/picks/"
+        picks_data = fetch_json(url_picks, headers)
 
     # 5. Build live squad payload with Threat, Creativity & Fixtures
     current_squad_stats = []
+    active_forwards = []
+
     for pick in picks_data.get("picks", []):
         p_id = pick["element"]
         pos_order = pick["position"]
@@ -104,11 +119,13 @@ def run_fpl_manager():
         p = players_by_id.get(p_id, {})
         name = p.get("web_name", f"ID_{p_id}")
         t_id = p.get("team")
-        pos = positions.get(p.get("element_type"), "MID")
+        pos_type = p.get("element_type")
+        pos = positions.get(pos_type, "MID")
         team = teams.get(t_id, "Unknown")
         cost = p.get("now_cost", 0) / 10
         status = p.get("status", "a")
-        chance = p.get("chance_of_playing_next_round", 100)
+        chance = p.get("chance_of_playing_next_round")
+        chance_val = 100 if chance is None else chance
         ep_next = float(p.get("ep_next") or 0.0)
         threat = float(p.get("threat") or 0.0)
         creat = float(p.get("creativity") or 0.0)
@@ -116,16 +133,21 @@ def run_fpl_manager():
         assists = p.get("assists", 0)
         schedule = get_schedule_str(t_id)
 
+        if pos_type == 4 and status in ("a", "d") and chance_val > 0:
+            active_forwards.append(name)
+
         current_squad_stats.append(
             f"Slot {pos_order}{is_bench}: {name}{is_cap}{is_vc} | {pos} | {team} | Cost: £{cost:.1f}m | "
-            f"Status: {status} ({chance}%) | xP(GW{next_gw}): {ep_next} | Threat: {threat:.0f} | "
+            f"Status: {status} ({chance_val}%) | xP(GW{next_gw}): {ep_next} | Threat: {threat:.0f} | "
             f"Creativity: {creat:.0f} | G+A: {goals}+{assists} | Run: [{schedule}]"
         )
 
     # 6. Extract top live market transfer targets (Filtering out non-attacking CDMs)
     market_pool = []
     for p in data["elements"]:
-        if p["status"] == 'a' and float(p.get("chance_of_playing_next_round") or 100) == 100:
+        chance_raw = p.get("chance_of_playing_next_round")
+        chance_val = 100 if chance_raw is None else float(chance_raw)
+        if p["status"] == 'a' and chance_val == 100:
             cost = p["now_cost"] / 10
             ep_next = float(p.get("ep_next") or 0.0)
             form = float(p.get("form") or 0.0)
@@ -153,6 +175,15 @@ def run_fpl_manager():
     current_squad_context = "\n".join(current_squad_stats)
     market_context = "\n".join(market_pool[:60])
 
+    if len(active_forwards) < 3:
+        formation_rule = (
+            f"You only have {len(active_forwards)} active playing forwards ({', '.join(active_forwards)}). "
+            "Therefore, 3-4-3 is STRICTLY IMPOSSIBLE unless you transfer in a 3rd active forward. "
+            "Permissible formations for this current squad: 4-4-2, 3-5-2, or 5-3-2."
+        )
+    else:
+        formation_rule = "Permissible formations: 3-4-3, 3-5-2, 4-4-2, 4-3-3, or 5-3-2."
+
     # 7. Construct Guardrailed Tactical Prompt
     prompt = f"""You are the lead tactical analyst for FPL team 'Bayern Bru' (ID: {TEAM_ID}).
 We are preparing our strategy for Gameweek {next_gw} with a 4-Gameweek horizon (GW{next_gw} to GW{next_gw + 3}).
@@ -174,11 +205,10 @@ CRITICAL RULES & FORMATION CONSTRAINTS:
 1. STRICT ROSTER ACCOUNTING:
    - Exactly 11 starters and exactly 4 bench players.
    - EVERY PLAYER MUST APPEAR EXACTLY ONCE. A player CANNOT be listed as both a starter and on the bench.
-   - You only have 2 active playing forwards (Haaland, Isak; Obi is non-playing bench fodder). Therefore, 3-4-3 is STRICTLY IMPOSSIBLE.
-   - Permissible formations for this squad: 4-4-2, 3-5-2, or 5-3-2.
+   - {formation_rule}
 
 2. ANTI-CDM TRANSFER RULE:
-   - NEVER sell an attacking midfielder (winger/number 10 like Smith Rowe) for a defensive/holding midfielder (CDM like Janelt, Norgaard, Soucek), even if their short-term xP is inflated by clean-sheet projections.
+   - NEVER sell an attacking midfielder (winger/number 10) for a defensive/holding midfielder (CDM like Janelt, Norgaard, Soucek), even if their short-term xP is inflated by clean-sheet projections.
    - Midfield targets MUST have genuine attacking threat and high open-play involvement.
 
 3. TRANSFER DECISION LOGIC:
@@ -193,31 +223,40 @@ Output Structure:
 5. **Bench Priority Order** (Sub GK, Bench 1, Bench 2, Bench 3 - exactly 4 unique players not in Starting XI)
 """
 
-    # 8. Deterministic Generation with automated retry & backoff
+    # 8. Deterministic Generation with multi-model failover & exponential backoff
+    models_to_try = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
     client = genai.Client()
-    max_retries = 4
-    delay = 6
     response = None
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            chat = client.chats.create(
-                model="gemini-3.6-flash",
-                config=types.GenerateContentConfig(temperature=0.0)
-            )
-            response = chat.send_message(prompt)
+    for model_name in models_to_try:
+        delay = 8
+        max_retries = 4
+        for attempt in range(1, max_retries + 1):
+            try:
+                chat = client.chats.create(model=model_name)
+                response = chat.send_message(prompt)
+                print(f"[Model used: {model_name}]")
+                break
+            except (errors.ServerError, errors.APIError) as e:
+                print(f"{model_name} error (Attempt {attempt}/{max_retries}): {e}")
+                if getattr(e, "code", None) == 404:
+                    print(f"{model_name} unavailable/retired (404). Switching immediately to fallback...")
+                    break
+                if attempt < max_retries:
+                    print(f"Retrying {model_name} in {delay}s...")
+                    time.sleep(delay)
+                    delay *= 2
+                else:
+                    print(f"Exhausted retries for {model_name}. Switching to next fallback model...")
+        if response:
             break
-        except (errors.ServerError, errors.APIError) as e:
-            if attempt == max_retries:
-                print(f"API failed after {max_retries} attempts. Raising error.")
-                raise e
-            print(f"Gemini API 503/Busy (Attempt {attempt}/{max_retries}). Retrying in {delay}s...")
-            time.sleep(delay)
-            delay *= 2
 
-    if response:
-        print(f"--- Bayern Bru: Gameweek {next_gw} 4-Week Horizon Plan ---")
-        print(response.text)
+    if not response:
+        raise RuntimeError("All Gemini fallback models failed after retries.")
+
+    print(f"--- Bayern Bru: Gameweek {next_gw} 4-Week Horizon Plan ---")
+    print(response.text)
+
 
 if __name__ == "__main__":
     run_fpl_manager()
