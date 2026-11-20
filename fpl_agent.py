@@ -51,15 +51,23 @@ def run_fpl_manager():
         if event.get("is_next"):
             next_gw = event["id"]
 
-    # 2. Fetch team history & dynamically calculate banked Free Transfers (Cap: 5)
+    # 2. Fetch team history, banked Free Transfers (Cap: 5), and Chip Inventory
     url_history = f"https://fantasy.premierleague.com/api/entry/{TEAM_ID}/history/"
     available_fts = 1
     bank_balance = 0.0
     total_points = 0
+    chips_used = []
 
     try:
         hist_data = fetch_json(url_history, headers)
         completed_events = hist_data.get("current", [])
+        chips_used = hist_data.get("chips", [])
+
+        # Wildcard and Free Hit retain existing saved Free Transfers for the next GW
+        ft_freeze_gws = {
+            c.get("event") for c in chips_used if c.get("name") in ("wildcard", "freehit")
+        }
+
         if completed_events:
             last_event = completed_events[-1]
             bank_balance = last_event.get("bank", 0) / 10
@@ -69,6 +77,8 @@ def run_fpl_manager():
             gw_num = ev.get("event")
             if gw_num < 2 or gw_num >= next_gw:
                 continue
+            if gw_num in ft_freeze_gws:
+                continue
             transfers_made = ev.get("event_transfers", 0)
             transfers_cost = ev.get("event_transfers_cost", 0)
             free_used = max(0, transfers_made - (transfers_cost // 4))
@@ -76,6 +86,38 @@ def run_fpl_manager():
             available_fts = min(5, remaining + 1)
     except Exception as e:
         print(f"Warning: Could not parse history endpoint ({e}). Defaulting to 1 FT.")
+
+    # Calculate available chips for the current half-season (GW1-19 vs GW20-38)
+    chip_labels = {
+        "wildcard": "Wildcard",
+        "freehit": "Free Hit",
+        "bboost": "Bench Boost",
+        "3xc": "Triple Captain"
+    }
+    if next_gw <= 19:
+        used_in_half = {c["name"] for c in chips_used if c.get("event", 0) <= 19}
+        gws_left_in_half = 19 - next_gw + 1
+        chip_window_note = (
+            f"First Half Set (GW1–GW19) | {gws_left_in_half} Gameweek(s) remaining before GW19 deadline "
+            "(unused first-half chips expire and do NOT roll over)"
+        )
+    else:
+        used_in_half = {c["name"] for c in chips_used if c.get("event", 0) >= 20}
+        gws_left_in_half = 38 - next_gw + 1
+        chip_window_note = f"Second Half Set (GW20–GW38) | {gws_left_in_half} Gameweek(s) remaining in season"
+
+    available_chips = [label for key, label in chip_labels.items() if key not in used_in_half]
+
+    # Free Hit cannot be played in consecutive Gameweeks (e.g., GW19 then GW20)
+    if next_gw == 20 and any(c.get("name") == "freehit" and c.get("event") == 19 for c in chips_used):
+        if "Free Hit" in available_chips:
+            available_chips.remove("Free Hit")
+
+    chips_available_str = ", ".join(available_chips) if available_chips else "None remaining in this half"
+    chips_used_history_str = (
+        ", ".join(f"{chip_labels.get(c['name'], c['name'])} (GW{c['event']})" for c in chips_used)
+        if chips_used else "None used yet"
+    )
 
     # 3. Build 4-Week Fixture Horizon (GW_next to GW_next+3)
     horizon_gws = list(range(next_gw, next_gw + 4))
@@ -191,8 +233,10 @@ We are preparing our strategy for Gameweek {next_gw} with a 4-Gameweek horizon (
 Manager Dashboard:
 - Current Overall Points: {total_points}
 - In the Bank (ITB): £{bank_balance:.1f}m
-- Free Transfers Available (FT): {available_fts}
-- Max Free Transfers Bankable: 5
+- Free Transfers Available (FT): {available_fts} (Max bankable: 5)
+- Chip Window: {chip_window_note}
+- Chips Available in Current Set: {chips_available_str}
+- Chips Played Season-to-Date: {chips_used_history_str}
 - Squad Constraints: Exactly 15 players, max 3 players per Premier League club.
 
 Current Live Squad (Synced from FPL API):
@@ -211,9 +255,12 @@ CRITICAL RULES & FORMATION CONSTRAINTS:
    - NEVER sell an attacking midfielder (winger/number 10) for a defensive/holding midfielder (CDM like Janelt, Norgaard, Soucek), even if their short-term xP is inflated by clean-sheet projections.
    - Midfield targets MUST have genuine attacking threat and high open-play involvement.
 
-3. TRANSFER DECISION LOGIC:
+3. TRANSFER & CHIP DECISION LOGIC:
    - Available FTs: {available_fts}.
-   - If no starter is injured/suspended, and no target offers a clear multi-week attacking upgrade within £{bank_balance:.1f}m ITB, you MUST recommend **[ROLL TRANSFER]** to bank transfers for subsequent weeks.
+   - Managers receive two full sets of chips per season: Set 1 expires at the GW19 deadline (unused chips are lost), and Set 2 unlocks from GW20 onwards. Only 1 chip can be played per Gameweek.
+   - Playing Wildcard or Free Hit retains existing saved Free Transfers for the following Gameweek.
+   - Evaluate whether to play one of [{chips_available_str}] in GW{next_gw} or target a specific Gameweek within our 4-week horizon (GW{next_gw}–GW{next_gw + 3}) so none expire unused at GW19.
+   - If no chip is warranted and no starter is injured/suspended with a clear multi-week upgrade within £{bank_balance:.1f}m ITB, recommend **[ROLL TRANSFER]**.
 
 Output Structure:
 1. **4-Week Fixture & Squad Health Audit**
@@ -221,6 +268,7 @@ Output Structure:
 3. **Gameweek {next_gw} Starting XI & Formation** (Must be a legal 11-man formation)
 4. **Captain (C) & Vice-Captain (VC)**
 5. **Bench Priority Order** (Sub GK, Bench 1, Bench 2, Bench 3 - exactly 4 unique players not in Starting XI)
+6. **Chip Strategy & Expiry Check** (Remaining chips in current set, GW19 countdown, and recommended activation window)
 """
 
     # 8. Deterministic Generation with multi-model failover & exponential backoff
